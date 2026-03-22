@@ -172,6 +172,7 @@ pub struct DatabaseOpts {
     pub enable_index_method: bool,
     pub enable_autovacuum: bool,
     pub enable_attach: bool,
+    pub enable_generated_columns: bool,
     pub unsafe_testing: bool,
     enable_load_extension: bool,
 }
@@ -214,6 +215,11 @@ impl DatabaseOpts {
 
     pub fn with_attach(mut self, enable: bool) -> Self {
         self.enable_attach = enable;
+        self
+    }
+
+    pub fn with_generated_columns(mut self, enable: bool) -> Self {
+        self.enable_generated_columns = enable;
         self
     }
 
@@ -1617,6 +1623,10 @@ impl Database {
 
     pub fn experimental_attach_enabled(&self) -> bool {
         self.opts.enable_attach
+    }
+
+    pub fn experimental_generated_columns_enabled(&self) -> bool {
+        self.opts.enable_generated_columns
     }
 
     /// check if database is currently in MVCC mode

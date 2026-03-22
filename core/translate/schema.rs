@@ -1,6 +1,5 @@
 use crate::sync::Arc;
 
-use crate::ast;
 use crate::ext::VTabImpl;
 use crate::function::{Deterministic, Func, MathFunc, ScalarFunc};
 use crate::schema::{
@@ -28,6 +27,7 @@ use crate::Connection;
 use crate::{bail_parse_error, CaptureDataChangesExt, Result};
 
 use turso_ext::VTabKind;
+use turso_parser::ast;
 use turso_parser::ast::ColumnDefinition;
 
 /// Validate a CHECK constraint expression at CREATE TABLE / ALTER TABLE ADD COLUMN time.
@@ -714,7 +714,12 @@ fn validate_check_types_in_expr(
     Ok(())
 }
 
-fn validate(body: &ast::CreateTableBody, table_name: &str, resolver: &Resolver) -> Result<()> {
+fn validate(
+    body: &ast::CreateTableBody,
+    table_name: &str,
+    resolver: &Resolver,
+    conn: &Connection,
+) -> Result<()> {
     if let ast::CreateTableBody::ColumnsAndConstraints {
         options,
         columns,
@@ -731,6 +736,13 @@ fn validate(body: &ast::CreateTableBody, table_name: &str, resolver: &Resolver) 
                 match &constraint.constraint {
                     ast::ColumnConstraint::Check(expr) => {
                         validate_check_expr(expr, table_name, &column_names, resolver)?;
+                    }
+                    ast::ColumnConstraint::Generated { .. }
+                        if !conn.experimental_generated_columns_enabled() =>
+                    {
+                        bail_parse_error!(
+                            "Generated columns require --experimental-generated-columns flag"
+                        );
                     }
                     ast::ColumnConstraint::Default(expr) => {
                         let expr =
@@ -857,7 +869,7 @@ pub fn translate_create_table(
     if temporary {
         bail_parse_error!("TEMPORARY table not supported yet");
     }
-    validate(&body, &normalized_tbl_name, resolver)?;
+    validate(&body, &normalized_tbl_name, resolver, connection)?;
 
     // Gate array column types behind the experimental custom types flag.
     if !connection.experimental_custom_types_enabled() {

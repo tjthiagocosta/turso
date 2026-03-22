@@ -1372,6 +1372,10 @@ impl Connection {
         self.db.experimental_attach_enabled()
     }
 
+    pub fn experimental_generated_columns_enabled(&self) -> bool {
+        self.db.experimental_generated_columns_enabled()
+    }
+
     pub fn mvcc_enabled(&self) -> bool {
         self.db.mvcc_enabled()
     }
