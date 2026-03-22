@@ -19,7 +19,7 @@ use super::plan::{HashJoinType, TableReferences};
 use crate::error::SQLITE_CONSTRAINT_CHECK;
 use crate::function::Func;
 use crate::schema::{
-    BTreeTable, CheckConstraint, Column, GeneratedType, IndexColumn, Schema, Table,
+    BTreeTable, CheckConstraint, Column, ColumnLayout, GeneratedType, IndexColumn, Schema, Table,
 };
 use crate::translate::compound_select::emit_program_for_compound_select;
 use crate::translate::expr::{
@@ -727,39 +727,30 @@ pub fn emit_cdc_patch_record(
     }
 }
 
-pub(super) fn emit_make_record_without_virtual_columns<'a>(
+pub(super) fn emit_make_record<'a>(
     program: &mut ProgramBuilder,
+    //TODO we assume that registers are contigious, so we shouldn't require an index anymore, we should just accept a &[Column]
     cols: impl IntoIterator<Item = (usize, &'a Column)>,
     dest_reg: usize,
     is_strict: bool,
 ) {
-    let all_cols: Vec<(usize, &Column)> = cols.into_iter().collect();
-    let storable_cols: Vec<(usize, &Column)> = all_cols
-        .iter()
+    let storable_cols: Vec<(usize, &Column)> = cols
+        .into_iter()
         .filter(|(_, c)| !c.is_virtual_generated())
-        .copied()
         .collect();
     let storable_count = storable_cols.len();
 
-    let (record_start, record_count) = if storable_count < all_cols.len() {
-        // There are virtual columns; create a compact representation by
-        // copying all storable columns to contiguous registers.
-        // TODO see if we can compact the registers in-place
-        let record_start = program.alloc_registers(storable_count);
-        for (compact_idx, &(src_reg, _)) in storable_cols.iter().enumerate() {
-            program.emit_insn(Insn::Copy {
-                src_reg,
-                dst_reg: record_start + compact_idx,
-                extra_amount: 0,
-            });
-        }
-        (record_start, storable_count)
-    } else {
-        let &(first_reg, _) = storable_cols
-            .first()
-            .expect("there should be at least 1 storable column");
-        (first_reg, storable_count)
-    };
+    let &(start_reg, _) = storable_cols
+        .first()
+        .expect("there should be at least 1 storable column");
+
+    debug_assert!(
+        storable_cols
+            .iter()
+            .enumerate()
+            .all(|(i, (r, _))| *r == start_reg + i),
+        "storable (non-virtual) column registers must be contiguous"
+    );
 
     let affinity_str: String = storable_cols
         .iter()
@@ -767,8 +758,8 @@ pub(super) fn emit_make_record_without_virtual_columns<'a>(
         .collect();
 
     program.emit_insn(Insn::MakeRecord {
-        start_reg: to_u16(record_start),
-        count: to_u16(record_count),
+        start_reg: to_u16(start_reg),
+        count: to_u16(storable_count),
         dest_reg: to_u16(dest_reg),
         index_name: None,
         affinity_str: Some(affinity_str),
@@ -1340,6 +1331,7 @@ fn rewrite_where_for_update_registers(
     columns: &[Column],
     columns_start_reg: usize,
     rowid_reg: usize,
+    layout: &ColumnLayout,
 ) -> Result<WalkControl> {
     walk_expr_mut(expr, &mut |e: &mut Expr| -> Result<WalkControl> {
         match e {
@@ -1353,12 +1345,14 @@ fn rewrite_where_for_update_registers(
                     if c.is_rowid_alias() {
                         *e = Expr::Register(rowid_reg);
                     } else {
-                        *e = Expr::Register(columns_start_reg + idx);
+                        let offset = layout.to_reg_offset(idx);
+                        *e = Expr::Register(columns_start_reg + offset);
                     }
                 }
             }
             Expr::Id(name) => {
                 let normalized = normalize_ident(name.as_str());
+
                 if ROWID_STRS
                     .iter()
                     .any(|s| s.eq_ignore_ascii_case(&normalized))
@@ -1372,7 +1366,8 @@ fn rewrite_where_for_update_registers(
                     if c.is_rowid_alias() {
                         *e = Expr::Register(rowid_reg);
                     } else {
-                        *e = Expr::Register(columns_start_reg + idx);
+                        let offset = layout.to_reg_offset(idx);
+                        *e = Expr::Register(columns_start_reg + offset);
                     }
                 }
             }
@@ -1446,10 +1441,17 @@ fn emit_index_column_value_new_image(
     idx_col: &IndexColumn,
     dest_reg: usize,
     is_strict: bool,
+    layout: &ColumnLayout,
 ) -> Result<()> {
     if let Some(expr) = &idx_col.expr {
         let mut expr = expr.as_ref().clone();
-        rewrite_where_for_update_registers(&mut expr, columns, columns_start_reg, rowid_reg)?;
+        rewrite_where_for_update_registers(
+            &mut expr,
+            columns,
+            columns_start_reg,
+            rowid_reg,
+            layout,
+        )?;
         // The caller must have populated resolver.register_affinities so that
         // comparison instructions in the expression get the correct column
         // affinity even though column references have been rewritten to
@@ -1465,26 +1467,26 @@ fn emit_index_column_value_new_image(
             columns_start_reg,
             Some(rowid_reg),
             is_strict,
+            layout,
         )?;
 
-        program.with_self_table_context(
-            Some(&SelfTableContext::for_contiguous_regs(
-                columns,
-                columns_start_reg,
-                Some(rowid_reg),
-            )),
-            |program, _| {
-                translate_expr_no_constant_opt(
-                    program,
-                    None,
-                    &expr,
-                    dest_reg,
-                    resolver,
-                    NoConstantOptReason::RegisterReuse,
-                )?;
-                Ok(())
-            },
-        )?;
+        let ctx = SelfTableContext::new(
+            columns,
+            columns_start_reg,
+            layout,
+            Some(rowid_reg),
+        );
+        program.with_self_table_context(Some(&ctx), |program, _| {
+            translate_expr_no_constant_opt(
+                program,
+                None,
+                &expr,
+                dest_reg,
+                resolver,
+                NoConstantOptReason::RegisterReuse,
+            )?;
+            Ok(())
+        })?;
     } else {
         let col_in_table = columns
             .get(idx_col.pos_in_table)
@@ -1499,6 +1501,7 @@ fn emit_index_column_value_new_image(
                     columns,
                     resolver,
                     Some(rowid_reg),
+                    Some(layout),
                 )?;
                 program.emit_column_affinity(dest_reg, col_in_table.affinity());
             }
@@ -1506,7 +1509,8 @@ fn emit_index_column_value_new_image(
                 let src_reg = if col_in_table.is_rowid_alias() {
                     rowid_reg
                 } else {
-                    columns_start_reg + idx_col.pos_in_table
+                    let offset = layout.to_reg_offset(idx_col.pos_in_table);
+                    columns_start_reg + offset
                 };
                 program.emit_insn(Insn::Copy {
                     src_reg,

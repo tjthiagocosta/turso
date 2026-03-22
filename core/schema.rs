@@ -1885,6 +1885,115 @@ impl Clone for Schema {
     }
 }
 
+/// Maps schema column indices to register offsets for DML operations.
+// TODO this should be integrated into a Columns domain type
+#[derive(Debug, Clone)]
+pub enum ColumnLayout {
+    Identity {
+        column_count: usize,
+    },
+    Mapped {
+        // col_index -> offset
+        offsets: Vec<usize>,
+        non_virtual_col_count: usize,
+    },
+}
+
+impl ColumnLayout {
+    pub fn from_table(table: &Table) -> Self {
+        match table {
+            Table::BTree(btree) => Self::from_columns(&btree.columns),
+            Table::Virtual(vtable) => Self::Identity {
+                column_count: vtable.as_ref().columns.len(),
+            },
+            Table::FromClauseSubquery(subquery) => Self::Identity {
+                column_count: subquery.columns.len(),
+            },
+        }
+    }
+
+    pub fn from_btree(btree: &BTreeTable) -> Self {
+        Self::from_columns(&btree.columns)
+    }
+
+    pub fn from_columns(columns: &[Column]) -> Self {
+        let total = columns.len();
+        let non_virtual_col_count = columns.iter().filter(|c| !c.is_virtual_generated()).count();
+        if non_virtual_col_count == total {
+            return Self::Identity {
+                column_count: total,
+            };
+        }
+        let mut offsets = vec![0usize; total];
+        let mut nv_idx = 0;
+        let mut v_idx = non_virtual_col_count;
+        for (i, col) in columns.iter().enumerate() {
+            if col.is_virtual_generated() {
+                offsets[i] = v_idx;
+                v_idx += 1;
+            } else {
+                offsets[i] = nv_idx;
+                nv_idx += 1;
+            }
+        }
+        Self::Mapped {
+            offsets,
+            non_virtual_col_count,
+        }
+    }
+
+    /// Map a schema column index to its register offset.
+    #[inline(always)]
+    pub fn to_reg_offset(&self, col_idx: usize) -> usize {
+        match self {
+            Self::Identity { .. } => col_idx,
+            Self::Mapped { offsets, .. } => offsets[col_idx],
+        }
+    }
+
+    /// Resolve schema column index to an absolute register.
+    #[inline(always)]
+    pub fn to_register(&self, base: usize, schema_idx: usize) -> usize {
+        base + self.to_reg_offset(schema_idx)
+    }
+
+    #[inline(always)]
+    pub fn non_virtual_col_count(&self) -> usize {
+        match self {
+            Self::Identity {
+                column_count: total,
+            } => *total,
+            Self::Mapped {
+                non_virtual_col_count,
+                ..
+            } => *non_virtual_col_count,
+        }
+    }
+
+    #[inline(always)]
+    pub fn column_count(&self) -> usize {
+        match self {
+            Self::Identity {
+                column_count: total,
+            } => *total,
+            Self::Mapped { offsets, .. } => offsets.len(),
+        }
+    }
+
+    pub fn column_idx_for_offset(&self, offset: usize) -> Option<usize> {
+        match self {
+            Self::Identity { column_count } => {
+                if offset < *column_count {
+                    Some(offset)
+                } else {
+                    None
+                }
+            }
+            Self::Mapped { offsets, .. } => offsets.iter().position(|&s| s == offset),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum Table {
     BTree(Arc<BTreeTable>),
@@ -2046,18 +2155,22 @@ pub struct BTreeTable {
 
 impl BTreeTable {
     /// Create a table reference for TypeCheck where custom type columns have
-    /// their `ty_str` replaced with the base type name. This ensures TypeCheck
-    /// validates the encoded value against the correct base type (e.g., BLOB)
-    /// rather than accepting any STRICT type via the wildcard arm.
+    /// their `ty_str` replaced with the base type name, and where virtual columns
+    /// are skipped. This ensures TypeCheck validates the encoded value against the
+    /// correct base type (e.g., BLOB) rather than accepting any STRICT type via the wildcard arm.
     pub fn type_check_table_ref(table: &Arc<BTreeTable>, schema: &Schema) -> Arc<BTreeTable> {
+        let has_virtual = table.has_virtual_columns();
         let has_custom = table
             .columns
             .iter()
             .any(|c| c.is_array() || schema.get_type_def(&c.ty_str, table.is_strict).is_some());
-        if !has_custom {
+        if !has_custom && !has_virtual {
             return Arc::clone(table);
         }
         let mut modified = (**table).clone();
+        if has_virtual {
+            modified.columns.retain(|c| !c.is_virtual_generated());
+        }
         for col in &mut modified.columns {
             if col.is_array() {
                 // Arrays are stored as record-format blobs.
@@ -2078,14 +2191,18 @@ impl BTreeTable {
         schema: &Schema,
         only_columns: Option<&std::collections::HashSet<usize>>,
     ) -> Arc<BTreeTable> {
+        let has_virtual = table.has_virtual_columns();
         let has_custom = table
             .columns
             .iter()
             .any(|c| c.is_array() || schema.get_type_def(&c.ty_str, table.is_strict).is_some());
-        if !has_custom {
+        if !has_custom && !has_virtual {
             return Arc::clone(table);
         }
         let mut modified = (**table).clone();
+        if has_virtual {
+            modified.columns.retain(|c| !c.is_virtual_generated());
+        }
         for (i, col) in modified.columns.iter_mut().enumerate() {
             if let Some(only) = only_columns {
                 if !only.contains(&i) {
@@ -2133,6 +2250,24 @@ impl BTreeTable {
             .iter()
             .enumerate()
             .find(|(_, column)| column.is_rowid_alias())
+    }
+
+    //TODO this should only be computed once
+    pub fn has_virtual_columns(&self) -> bool {
+        self.columns.iter().any(|c| c.is_virtual_generated())
+    }
+
+    pub fn non_virtual_column_count(&self) -> usize {
+        self.columns
+            .iter()
+            .filter(|c| !c.is_virtual_generated())
+            .count()
+    }
+
+    //TODO this should only be computed once
+    /// Build a `ColumnLayout` for this table's register mapping.
+    pub fn column_layout(&self) -> ColumnLayout {
+        ColumnLayout::from_btree(self)
     }
 
     /// Returns the column position and column for a given column name.

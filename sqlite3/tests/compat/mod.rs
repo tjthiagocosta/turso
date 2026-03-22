@@ -3152,14 +3152,14 @@ mod tests {
                 ptr::null_mut(),
                 &mut errmsg,
             );
-            assert_ne!(rc, SQLITE_OK, "external function in generated column should fail");
+            assert_ne!(
+                rc, SQLITE_OK,
+                "external function in generated column should fail"
+            );
 
             assert!(!errmsg.is_null(), "error message should be set");
             let msg = std::ffi::CStr::from_ptr(errmsg).to_str().unwrap();
-            assert_eq!(
-                msg,
-                "Parse error: no such function: my_ext_func"
-            );
+            assert_eq!(msg, "Parse error: no such function: my_ext_func");
             sqlite3_free(errmsg as *mut libc::c_void);
 
             assert_eq!(sqlite3_close(db), SQLITE_OK);

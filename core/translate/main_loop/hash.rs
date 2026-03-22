@@ -439,11 +439,14 @@ impl<'a, 'plan> PreparedHashBuild<'a, 'plan> {
                             },
                         )?;
 
-                        planner.program.emit_column_affinity(payload_reg + i, build_table.columns()[col_idx].affinity());
+                        planner.program.emit_column_affinity(
+                            payload_reg + i,
+                            build_table.columns()[col_idx].affinity(),
+                        );
                         true
                     }
                     Some(GeneratedType::NotGenerated) | None => false,
-            };
+                };
                 if !is_virtual {
                     planner.program.emit_column_or_rowid(
                         payload_source_cursor_id,

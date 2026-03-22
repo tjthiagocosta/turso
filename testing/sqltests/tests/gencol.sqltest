@@ -2634,3 +2634,147 @@ expect {
     2|210
     3|310
 }
+
+# INSERT RETURNING * with virtual column in middle
+test gencol_returning_insert_star_middle {
+    CREATE TABLE t1(a INT, v AS (a*2) VIRTUAL, b INT);
+    INSERT INTO t1(a, b) VALUES(1, 100) RETURNING *;
+}
+expect {
+    1|2|100
+}
+
+# INSERT RETURNING specific columns
+test gencol_returning_insert_specific_cols {
+    CREATE TABLE t1(a INT, v AS (a*2) VIRTUAL, b INT);
+    INSERT INTO t1(a, b) VALUES(5, 50) RETURNING a, b, v;
+}
+expect {
+    5|50|10
+}
+
+# UPDATE RETURNING *
+test gencol_returning_update_star {
+    CREATE TABLE t1(a INT, v AS (a*2) VIRTUAL, b INT);
+    INSERT INTO t1(a, b) VALUES(1, 100);
+    UPDATE t1 SET a = 10 RETURNING *;
+}
+expect {
+    10|20|100
+}
+
+# RETURNING with virtual column as FIRST column
+test gencol_returning_virtual_first {
+    CREATE TABLE t1(v AS (b*3) VIRTUAL, a INT, b INT);
+    INSERT INTO t1(a, b) VALUES(1, 2) RETURNING *;
+}
+expect {
+    6|1|2
+}
+
+# RETURNING with multiple interspersed virtual columns
+test gencol_returning_multiple_virtual {
+    CREATE TABLE t1(a INT, v1 AS (a*2) VIRTUAL, b INT, v2 AS (b*3) VIRTUAL, c INT);
+    INSERT INTO t1(a, b, c) VALUES(1, 2, 3) RETURNING *;
+}
+expect {
+    1|2|2|6|3
+}
+
+# UPSERT RETURNING *
+test gencol_returning_upsert {
+    CREATE TABLE t1(a INT PRIMARY KEY, v AS (a*2) VIRTUAL, b INT);
+    INSERT INTO t1(a, b) VALUES(1, 100);
+    INSERT INTO t1(a, b) VALUES(1, 200) ON CONFLICT(a) DO UPDATE SET b = excluded.b RETURNING *;
+}
+expect {
+    1|2|200
+}
+
+# Upsert SET referencing current row value
+test gencol_upsert_set_current_row {
+    CREATE TABLE t1(a INT PRIMARY KEY, v AS (a*2) VIRTUAL, b INT);
+    INSERT INTO t1(a, b) VALUES(1, 100);
+    INSERT INTO t1(a, b) VALUES(1, 200) ON CONFLICT(a) DO UPDATE SET b = t1.b + excluded.b;
+    SELECT * FROM t1;
+}
+expect {
+    1|2|300
+}
+
+# Upsert WHERE clause on current row
+test gencol_upsert_where_clause {
+    CREATE TABLE t1(a INT PRIMARY KEY, v AS (a*2) VIRTUAL, b INT);
+    INSERT INTO t1(a, b) VALUES(1, 100);
+    INSERT INTO t1(a, b) VALUES(1, 200) ON CONFLICT(a) DO UPDATE SET b = excluded.b WHERE t1.b < 150;
+    SELECT * FROM t1;
+}
+expect {
+    1|2|200
+}
+
+# Upsert index integrity after unique index update
+test gencol_upsert_index_integrity {
+    CREATE TABLE t1(a INT PRIMARY KEY, v AS (a*2) VIRTUAL, b INT UNIQUE);
+    INSERT INTO t1(a, b) VALUES(1, 100);
+    INSERT INTO t1(a, b) VALUES(1, 200) ON CONFLICT(a) DO UPDATE SET b = excluded.b;
+    SELECT * FROM t1;
+    PRAGMA integrity_check;
+}
+expect {
+    1|2|200
+    ok
+}
+
+# FK enforcement during upsert with virtual columns
+test gencol_upsert_fk_enforcement {
+    PRAGMA foreign_keys = ON;
+    CREATE TABLE parent(id INT PRIMARY KEY);
+    INSERT INTO parent VALUES(1), (2);
+    CREATE TABLE child(a INT PRIMARY KEY, v AS (a*10) VIRTUAL, b INT REFERENCES parent(id));
+    INSERT INTO child(a, b) VALUES(1, 1);
+    INSERT INTO child(a, b) VALUES(1, 999) ON CONFLICT(a) DO UPDATE SET b = excluded.b;
+}
+expect error {
+    FOREIGN KEY constraint failed
+}
+
+# BEFORE/AFTER trigger NEW values in UPDATE
+test gencol_update_trigger_new_values {
+    CREATE TABLE t1(a INT, v AS (a*2) VIRTUAL, b INT);
+    CREATE TABLE log(op TEXT, old_a INT, old_b INT, new_a INT, new_b INT);
+    CREATE TRIGGER trg_before BEFORE UPDATE ON t1 BEGIN INSERT INTO log VALUES('BEFORE', OLD.a, OLD.b, NEW.a, NEW.b); END;
+    CREATE TRIGGER trg_after AFTER UPDATE ON t1 BEGIN INSERT INTO log VALUES('AFTER', OLD.a, OLD.b, NEW.a, NEW.b); END;
+    INSERT INTO t1(a, b) VALUES(1, 2);
+    UPDATE t1 SET a = 10;
+    SELECT * FROM log;
+}
+expect {
+    BEFORE|1|2|10|2
+    AFTER|1|2|10|2
+}
+
+# UPDATE with indexed virtual column
+test gencol_update_indexed_virtual_col {
+    CREATE TABLE t1(a INT, v AS (a*2) VIRTUAL, b INT);
+    CREATE INDEX idx_v ON t1(v);
+    INSERT INTO t1(a, b) VALUES(5, 10);
+    UPDATE t1 SET a = 20;
+    SELECT * FROM t1;
+    PRAGMA integrity_check;
+}
+expect {
+    20|40|10
+    ok
+}
+
+# UPDATE with virtual column as FIRST column
+test gencol_update_virtual_first_col {
+    CREATE TABLE t1(v AS (b*3) VIRTUAL, a INT, b INT);
+    INSERT INTO t1(a, b) VALUES(1, 2);
+    UPDATE t1 SET a = 10;
+    SELECT * FROM t1;
+}
+expect {
+    6|10|2
+}

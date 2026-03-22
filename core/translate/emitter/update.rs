@@ -1,5 +1,5 @@
 use super::TranslateCtx;
-use crate::schema::{GeneratedType, Table};
+use crate::schema::{ColumnLayout, GeneratedType, Table};
 use crate::translate::insert::halt_desc_and_on_error;
 use crate::translate::stmt_journal::any_effective_replace;
 use crate::{
@@ -13,9 +13,9 @@ use crate::{
             check_expr_references_columns, delete::emit_fk_child_decrement_on_delete,
             emit_cdc_autocommit_commit, emit_cdc_full_record, emit_cdc_insns,
             emit_cdc_patch_record, emit_check_constraints, emit_index_column_value_new_image,
-            emit_index_column_value_old_image, emit_make_record_without_virtual_columns,
-            emit_program_for_select, init_limit, rewrite_where_for_update_registers, OperationMode,
-            Resolver, UpdateRowSource,
+            emit_index_column_value_old_image, emit_make_record, emit_program_for_select,
+            init_limit, rewrite_where_for_update_registers, OperationMode, Resolver,
+            UpdateRowSource,
         },
         expr::{
             emit_returning_results, emit_returning_scan_back, restore_returning_row_image_in_cache,
@@ -441,6 +441,7 @@ fn emit_update_column_values<'a>(
     skip_set_clauses: bool,
     skip_row_label: BranchOffset,
     skip_notnull_checks: bool,
+    layout: &ColumnLayout,
 ) -> crate::Result<()> {
     let or_conflict = program.resolve_type;
     if has_direct_rowid_update {
@@ -461,7 +462,7 @@ fn emit_update_column_values<'a>(
         }
     }
     for (idx, table_column) in target_table.table.columns().iter().enumerate() {
-        let target_reg = start + idx;
+        let target_reg = layout.to_register(start, idx);
         if let Some((col_idx, expr)) = set_clauses.iter().find(|(i, _)| *i == idx) {
             if !skip_set_clauses {
                 // Skip if this is the sentinel value
@@ -687,6 +688,7 @@ fn emit_deferred_notnull_checks<'a>(
     table_name: &str,
     skip_row_label: BranchOffset,
     t_ctx: &mut TranslateCtx<'a>,
+    layout: &ColumnLayout,
 ) -> crate::Result<()> {
     let or_conflict = program.resolve_type;
     for (idx, table_column) in target_table.table.columns().iter().enumerate() {
@@ -697,7 +699,7 @@ fn emit_deferred_notnull_checks<'a>(
         if !set_clauses.iter().any(|(i, _)| *i == idx) {
             continue;
         }
-        let target_reg = start + idx;
+        let target_reg = layout.to_register(start, idx);
         match or_conflict {
             ResolveType::Ignore => {
                 program.emit_insn(Insn::IsNull {
@@ -970,9 +972,8 @@ fn emit_update_insns<'a>(
         None
     };
     let table_name = target_table.table.get_name();
-
     let start = if is_virtual { beg + 2 } else { beg + 1 };
-
+    let layout = ColumnLayout::from_table(&target_table.as_ref().table);
     let skip_set_clauses = false;
 
     // Check early whether BEFORE UPDATE triggers exist, so we can defer NOT NULL
@@ -1016,18 +1017,20 @@ fn emit_update_insns<'a>(
         skip_set_clauses,
         skip_row_label,
         has_before_triggers_early,
+        &layout,
     )?;
 
-    // For non-STRICT tables, apply column affinity to the NEW values early.
-    // This must happen before index operations and triggers so that all operations
-    // use the converted values.
+    // For non-STRICT tables, apply column affinity to the NEW values.
     if let Some(btree_table) = target_table.table.btree() {
         if !btree_table.is_strict {
-            let affinity = btree_table.columns.iter().map(|c| c.affinity());
+            let affinity = btree_table
+                .columns
+                .iter()
+                .filter(|c| !c.is_virtual_generated())
+                .map(|c| c.affinity());
 
-            // Only emit Affinity if there's meaningful affinity to apply
             if affinity.clone().any(|a| a != Affinity::Blob) {
-                if let Ok(count) = std::num::NonZeroUsize::try_from(col_len) {
+                if let Ok(count) = NonZeroUsize::try_from(layout.non_virtual_col_count()) {
                     program.emit_insn(Insn::Affinity {
                         start_reg: start,
                         count,
@@ -1112,9 +1115,10 @@ fn emit_update_insns<'a>(
             compute_virtual_columns_for_update(
                 program,
                 columns,
-                &VirtualColumnRegisters::Contiguous {
+                &VirtualColumnRegisters::Mapped {
                     registers_start: start,
                     rowid_reg: Some(beg),
+                    layout: &layout,
                 },
                 &t_ctx.resolver,
             )?;
@@ -1128,7 +1132,7 @@ fn emit_update_insns<'a>(
             )?;
 
             let new_registers = (0..col_len)
-                .map(|i| start + i)
+                .map(|i| layout.to_register(start, i))
                 .chain(std::iter::once(new_rowid_reg))
                 .collect();
 
@@ -1242,6 +1246,7 @@ fn emit_update_insns<'a>(
             skip_set_clauses,
             skip_row_label,
             false,
+            &layout,
         )?;
 
         // Now emit NOT NULL checks for SET clause columns that were deferred
@@ -1256,6 +1261,7 @@ fn emit_update_insns<'a>(
             table_name,
             skip_row_label,
             t_ctx,
+            &layout,
         )?;
     }
 
@@ -1307,7 +1313,7 @@ fn emit_update_insns<'a>(
             t_ctx
                 .resolver
                 .register_affinities
-                .insert(start + idx, col.affinity());
+                .insert(layout.to_register(start, idx), col.affinity());
         }
         t_ctx
             .resolver
@@ -1317,11 +1323,14 @@ fn emit_update_insns<'a>(
 
     let has_virtual_columns = target_table
         .table
-        .columns()
-        .iter()
-        .any(|c| c.is_virtual_generated());
+        .btree()
+        .is_some_and(|bt| bt.has_virtual_columns());
+    let has_returning = returning.as_ref().is_some_and(|r| !r.is_empty());
     if has_virtual_columns
-        && (!indexes_to_update.is_empty() || has_before_triggers || has_after_triggers)
+        && (!indexes_to_update.is_empty()
+            || has_before_triggers
+            || has_after_triggers
+            || has_returning)
     {
         let columns = target_table.table.columns();
         let rowid_reg = rowid_set_clause_reg.unwrap_or(beg);
@@ -1331,13 +1340,14 @@ fn emit_update_insns<'a>(
                 emit_gencol_expr_from_registers(
                     program,
                     expr,
-                    start + idx,
+                    layout.to_register(start, idx),
                     start,
                     columns,
                     &t_ctx.resolver,
                     Some(rowid_reg),
+                    &layout,
                 )?;
-                program.emit_column_affinity(start + idx, col.affinity());
+                program.emit_column_affinity(layout.to_register(start, idx), col.affinity());
             }
         }
     }
@@ -1438,7 +1448,7 @@ fn emit_update_insns<'a>(
             // Non-SET columns hold encoded values from disk, so skip them (ANY).
             program.emit_insn(Insn::TypeCheck {
                 start_reg: start,
-                count: col_len,
+                count: layout.non_virtual_col_count(),
                 check_generated: true,
                 table_reference: BTreeTable::input_type_check_table_ref(
                     &btree_table,
@@ -1456,12 +1466,13 @@ fn emit_update_insns<'a>(
                 start,
                 Some(&set_col_indices),
                 table_name,
+                &layout,
             )?;
 
             // Post-encode TypeCheck: validate encoded values match storage type.
             program.emit_insn(Insn::TypeCheck {
                 start_reg: start,
-                count: col_len,
+                count: layout.non_virtual_col_count(),
                 check_generated: true,
                 table_reference: BTreeTable::type_check_table_ref(
                     &btree_table,
@@ -1521,7 +1532,7 @@ fn emit_update_insns<'a>(
                             if col.is_rowid_alias() {
                                 (n, rowid_set_clause_reg.unwrap_or(beg))
                             } else {
-                                (n, start + idx)
+                                (n, layout.to_register(start, idx))
                             }
                         })
                     }),
@@ -1549,6 +1560,7 @@ fn emit_update_insns<'a>(
                     &set_clauses.iter().map(|(i, _)| *i).collect::<HashSet<_>>(),
                     update_database_id,
                     &t_ctx.resolver,
+                    &layout,
                 )?;
             }
         }
@@ -1609,6 +1621,7 @@ fn emit_update_insns<'a>(
                 target_table.table.columns(),
                 start,
                 rowid_set_clause_reg.unwrap_or(beg),
+                &layout,
             )?;
 
             let new_satisfied_reg = program.alloc_register();
@@ -1644,6 +1657,7 @@ fn emit_update_insns<'a>(
                 col,
                 idx_start_reg + i,
                 target_table.table.is_strict(),
+                &layout,
             )?;
         }
         // last register is the rowid
@@ -2099,14 +2113,14 @@ fn emit_update_insns<'a>(
     match &target_table.table {
         Table::BTree(ref table) => {
             let record_reg = program.alloc_register();
-            emit_make_record_without_virtual_columns(
+            emit_make_record(
                 program,
                 target_table
                     .table
                     .columns()
                     .iter()
                     .enumerate()
-                    .map(|(i, c)| (start + i, c)),
+                    .map(|(i, c)| (layout.to_register(start, i), c)),
                 record_reg,
                 table.is_strict,
             );
@@ -2246,9 +2260,10 @@ fn emit_update_insns<'a>(
                     compute_virtual_columns_for_update(
                         program,
                         columns,
-                        &VirtualColumnRegisters::Contiguous {
+                        &VirtualColumnRegisters::Mapped {
                             registers_start: start,
                             rowid_reg: Some(beg),
+                            layout: &layout,
                         },
                         &t_ctx.resolver,
                     )?;
@@ -2267,7 +2282,7 @@ fn emit_update_insns<'a>(
                     // Build raw NEW registers. Values are encoded at this point;
                     // fire_trigger will decode them via decode_trigger_registers.
                     let new_registers_after: Vec<usize> = (0..col_len)
-                        .map(|i| start + i)
+                        .map(|i| layout.to_register(start, i))
                         .chain(std::iter::once(new_rowid_reg))
                         .collect();
 
@@ -2326,6 +2341,7 @@ fn emit_update_insns<'a>(
                     start,
                     rowid_set_clause_reg.unwrap_or(beg),
                     &mut t_ctx.resolver,
+                    &layout,
                 )?;
                 let result: Result<()> = (|| {
                     // Emit RETURNING subqueries after Insert so correlated references
@@ -2363,6 +2379,7 @@ fn emit_update_insns<'a>(
                         rowid_set_clause_reg.unwrap_or(beg),
                         &mut t_ctx.resolver,
                         returning_buffer,
+                        &layout,
                     )?;
                 }
             }
@@ -2473,7 +2490,7 @@ fn emit_update_insns<'a>(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn emit_gencol_expr_from_registers(
+pub(crate) fn emit_gencol_expr_from_registers(
     program: &mut ProgramBuilder,
     expr: &ast::Expr,
     target_reg: usize,
@@ -2481,28 +2498,30 @@ pub(super) fn emit_gencol_expr_from_registers(
     columns: &[crate::schema::Column],
     resolver: &Resolver,
     rowid_reg: Option<usize>,
+    layout: &ColumnLayout,
 ) -> Result<()> {
-    program.with_self_table_context(
-        Some(&SelfTableContext::for_contiguous_regs(
-            columns,
-            registers_start,
-            rowid_reg,
-        )),
-        |program, _| {
-            translate_expr(program, None, expr, target_reg, resolver)?;
-            Ok(())
-        },
-    )?;
+    let ctx = SelfTableContext::new(
+        columns,
+        registers_start,
+        layout,
+        rowid_reg,
+    );
+    program.with_self_table_context(Some(&ctx), |program, _| {
+        translate_expr(program, None, expr, target_reg, resolver)?;
+        Ok(())
+    })?;
 
     Ok(())
 }
 
+//TODO this is redundant with ColumnLayout, isn't it?
 pub(super) enum VirtualColumnRegisters<'a> {
-    Contiguous {
+    /// Storage-mapped contiguous block (non-virtual columns first, then virtual).
+    Mapped {
         registers_start: usize,
         rowid_reg: Option<usize>,
+        layout: &'a ColumnLayout,
     },
-    //TODO we might be able to get rid of this if we stop emitting NULL for virtual columns
     /// Non-contiguous registers indexed per column (OLD context in UPDATE).
     Indexed(&'a [usize]),
 }
@@ -2520,11 +2539,12 @@ pub(super) fn compute_virtual_columns_for_update(
         };
 
         match registers {
-            VirtualColumnRegisters::Contiguous {
+            VirtualColumnRegisters::Mapped {
                 registers_start,
                 rowid_reg,
+                layout,
             } => {
-                let target_reg = registers_start + idx;
+                let target_reg = layout.to_register(*registers_start, idx);
                 emit_gencol_expr_from_registers(
                     program,
                     expr,
@@ -2533,6 +2553,7 @@ pub(super) fn compute_virtual_columns_for_update(
                     columns,
                     resolver,
                     *rowid_reg,
+                    layou,
                 )?;
                 program.emit_column_affinity(target_reg, column.affinity());
             }

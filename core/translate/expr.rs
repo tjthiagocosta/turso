@@ -14,7 +14,7 @@ use crate::function::FtsFunc;
 use crate::function::JsonFunc;
 use crate::function::{AggFunc, Func, FuncCtx, MathFuncArity, ScalarFunc, VectorFunc};
 use crate::functions::datetime;
-use crate::schema::{ColDef, Column, GeneratedType, Table, Type, TypeDef};
+use crate::schema::{ColDef, Column, ColumnLayout, GeneratedType, Table, Type, TypeDef};
 use crate::sync::Arc;
 use crate::translate::expression_index::{
     normalize_expr_for_index_matching, single_table_column_usage,
@@ -3198,7 +3198,8 @@ pub fn translate_expr(
                                     },
                                 )?;
 
-                                program.emit_column_affinity(target_register, table_column.affinity());
+                                program
+                                    .emit_column_affinity(target_register, table_column.affinity());
                             }
                             _ => {
                                 let read_cursor = if read_from_index {
@@ -6461,6 +6462,7 @@ pub(crate) fn emit_returning_results<'a>(
     rowid_reg: usize,
     resolver: &mut Resolver<'a>,
     returning_buffer: Option<&ReturningBufferCtx>,
+    layout: &ColumnLayout,
 ) -> Result<()> {
     if result_columns.is_empty() {
         return Ok(());
@@ -6472,6 +6474,7 @@ pub(crate) fn emit_returning_results<'a>(
         reg_columns_start,
         rowid_reg,
         resolver,
+        layout,
     )?;
 
     let result = (|| {
@@ -6547,6 +6550,7 @@ pub(crate) fn seed_returning_row_image_in_cache<'a>(
     reg_columns_start: usize,
     rowid_reg: usize,
     resolver: &mut Resolver<'a>,
+    layout: &ColumnLayout,
 ) -> Result<ReturningRowImageCacheState> {
     turso_assert!(
         table_references.joined_tables().len() == 1,
@@ -6570,7 +6574,7 @@ pub(crate) fn seed_returning_row_image_in_cache<'a>(
         let raw_reg = if column.is_rowid_alias() {
             rowid_reg
         } else {
-            reg_columns_start + i
+            reg_columns_start + layout.to_reg_offset(i)
         };
         // The write registers hold stored (encoded) values. Produce the
         // user-facing value in a fresh register so RETURNING shows decoded
@@ -7170,6 +7174,7 @@ pub(crate) fn emit_user_facing_column_value(
 ///
 /// This ensures expression indexes on custom type columns evaluate the expression on
 /// **decoded** (user-facing) values, matching what SELECT / CREATE INDEX see.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn decode_custom_type_registers_in_expr(
     program: &mut ProgramBuilder,
     resolver: &Resolver,
@@ -7178,6 +7183,7 @@ pub(crate) fn decode_custom_type_registers_in_expr(
     start_reg: usize,
     key_reg: Option<usize>,
     is_strict: bool,
+    layout: &ColumnLayout,
 ) -> Result<()> {
     walk_expr_mut(expr, &mut |e| {
         if let ast::Expr::Register(reg) = e {
@@ -7188,7 +7194,9 @@ pub(crate) fn decode_custom_type_registers_in_expr(
             }
             // Map register back to column index.
             if reg_val >= start_reg {
-                let col_idx = reg_val - start_reg;
+                let col_idx = layout
+                    .column_idx_for_offset(reg_val - start_reg)
+                    .expect("layout returned invalid col_idx");
                 if let Some(column) = columns.get(col_idx) {
                     if let Some(type_def) =
                         resolver.schema().get_type_def(&column.ty_str, is_strict)
@@ -7528,6 +7536,7 @@ pub(crate) fn emit_custom_type_encode_columns(
     start_reg: usize,
     only_columns: Option<&HashSet<usize>>,
     table_name: &str,
+    layout: &ColumnLayout,
 ) -> Result<()> {
     for (i, col) in columns.iter().enumerate() {
         if let Some(filter) = only_columns {
@@ -7536,7 +7545,7 @@ pub(crate) fn emit_custom_type_encode_columns(
             }
         }
 
-        let reg = start_reg + i;
+        let reg = start_reg + layout.to_reg_offset(i);
 
         // Handle array columns: encode input (text or blob) -> record blob for storage
         if col.is_array() {
@@ -7586,6 +7595,7 @@ pub(crate) fn emit_custom_type_decode_columns(
     columns: &[Column],
     start_reg: usize,
     only_columns: Option<&HashSet<usize>>,
+    layout: &ColumnLayout,
 ) -> Result<()> {
     for (i, col) in columns.iter().enumerate() {
         if let Some(filter) = only_columns {
@@ -7594,7 +7604,7 @@ pub(crate) fn emit_custom_type_decode_columns(
             }
         }
 
-        let reg = start_reg + i;
+        let reg = start_reg + layout.to_reg_offset(i);
 
         // Handle array columns: decode record blob -> JSON text for display
         if col.is_array() {

@@ -6,7 +6,7 @@ use turso_parser::ast::{self, ResolveType, SortOrder, TableInternalId};
 use crate::{
     index_method::IndexMethodAttachment,
     parameters::Parameters,
-    schema::{BTreeTable, Column, Index, PseudoCursorType, Schema, Table, Trigger},
+    schema::{BTreeTable, Column, ColumnLayout, Index, PseudoCursorType, Schema, Table, Trigger},
     translate::{
         collate::CollationSeq,
         emitter::{MaterializedColumnRef, TransactionMode},
@@ -120,11 +120,10 @@ pub enum SelfTableContext {
 }
 
 impl SelfTableContext {
-    /// Build a ForDML context from contiguous registers starting at `base_reg`.
-    /// If provided, use `rowid_reg` for rowid columns.
-    pub fn for_contiguous_regs(
+    pub fn new(
         columns: &[Column],
         base_reg: usize,
+        layout: &ColumnLayout,
         rowid_reg: Option<usize>,
     ) -> Self {
         Self::ForDML {
@@ -133,9 +132,9 @@ impl SelfTableContext {
                 .enumerate()
                 .map(|(i, col)| {
                     if col.is_rowid_alias() {
-                        rowid_reg.unwrap_or(base_reg + i)
+                        rowid_reg.unwrap_or(base_reg + layout.to_reg_offset(i))
                     } else {
-                        base_reg + i
+                        base_reg + layout.to_reg_offset(i)
                     }
                 })
                 .collect(),
