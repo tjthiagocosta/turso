@@ -1112,24 +1112,12 @@ fn emit_update_insns<'a>(
             let new_rowid_reg = rowid_set_clause_reg.unwrap_or(beg);
 
             // Compute virtual columns for NEW values
-            compute_virtual_columns_for_update(
-                program,
-                columns,
-                &VirtualColumnRegisters::Mapped {
-                    registers_start: start,
-                    rowid_reg: Some(beg),
-                    layout: &layout,
-                },
-                &t_ctx.resolver,
-            )?;
+            let new_ctx = SelfTableContext::new(columns, start, &layout, beg);
+            compute_virtual_columns(program, columns, &new_ctx, &t_ctx.resolver)?;
 
             // Compute virtual columns for OLD values
-            compute_virtual_columns_for_update(
-                program,
-                columns,
-                &VirtualColumnRegisters::Indexed(&old_registers),
-                &t_ctx.resolver,
-            )?;
+            let old_ctx = SelfTableContext::from_registers(columns, &old_registers);
+            compute_virtual_columns(program, columns, &old_ctx, &t_ctx.resolver)?;
 
             let new_registers = (0..col_len)
                 .map(|i| layout.to_register(start, i))
@@ -1344,7 +1332,7 @@ fn emit_update_insns<'a>(
                     start,
                     columns,
                     &t_ctx.resolver,
-                    Some(rowid_reg),
+                    rowid_reg,
                     &layout,
                 )?;
                 program.emit_column_affinity(layout.to_register(start, idx), col.affinity());
@@ -2257,25 +2245,13 @@ fn emit_update_insns<'a>(
                     let columns = target_table.table.columns();
 
                     // Compute VIRTUAL columns for NEW values
-                    compute_virtual_columns_for_update(
-                        program,
-                        columns,
-                        &VirtualColumnRegisters::Mapped {
-                            registers_start: start,
-                            rowid_reg: Some(beg),
-                            layout: &layout,
-                        },
-                        &t_ctx.resolver,
-                    )?;
+                    let new_ctx = SelfTableContext::new(columns, start, &layout, beg);
+                    compute_virtual_columns(program, columns, &new_ctx, &t_ctx.resolver)?;
 
                     // Compute VIRTUAL columns for OLD values if we have preserved OLD registers
                     if let Some(ref old_regs) = preserved_old_registers {
-                        compute_virtual_columns_for_update(
-                            program,
-                            columns,
-                            &VirtualColumnRegisters::Indexed(old_regs),
-                            &t_ctx.resolver,
-                        )?;
+                        let old_ctx = SelfTableContext::from_registers(columns, old_regs);
+                        compute_virtual_columns(program, columns, &old_ctx, &t_ctx.resolver)?;
                     }
 
                     let new_rowid_reg = rowid_set_clause_reg.unwrap_or(beg);
@@ -2497,15 +2473,10 @@ pub(crate) fn emit_gencol_expr_from_registers(
     registers_start: usize,
     columns: &[crate::schema::Column],
     resolver: &Resolver,
-    rowid_reg: Option<usize>,
+    rowid_reg: usize,
     layout: &ColumnLayout,
 ) -> Result<()> {
-    let ctx = SelfTableContext::new(
-        columns,
-        registers_start,
-        layout,
-        rowid_reg,
-    );
+    let ctx = SelfTableContext::new(columns, registers_start, layout, rowid_reg);
     program.with_self_table_context(Some(&ctx), |program, _| {
         translate_expr(program, None, expr, target_reg, resolver)?;
         Ok(())
@@ -2514,67 +2485,27 @@ pub(crate) fn emit_gencol_expr_from_registers(
     Ok(())
 }
 
-//TODO this is redundant with ColumnLayout, isn't it?
-pub(super) enum VirtualColumnRegisters<'a> {
-    /// Storage-mapped contiguous block (non-virtual columns first, then virtual).
-    Mapped {
-        registers_start: usize,
-        rowid_reg: Option<usize>,
-        layout: &'a ColumnLayout,
-    },
-    /// Non-contiguous registers indexed per column (OLD context in UPDATE).
-    Indexed(&'a [usize]),
-}
-
-/// Compute vircual columns into their registers for trigger access during UPDATE.
-pub(super) fn compute_virtual_columns_for_update(
+pub(super) fn compute_virtual_columns(
     program: &mut ProgramBuilder,
     columns: &[crate::schema::Column],
-    registers: &VirtualColumnRegisters<'_>,
+    ctx: &SelfTableContext,
     resolver: &Resolver,
 ) -> Result<()> {
+    let SelfTableContext::ForDML {
+        ref column_regs, ..
+    } = ctx
+    else {
+        unreachable!("compute_virtual_columns requires ForDML context");
+    };
     for (idx, column) in columns.iter().enumerate() {
         let GeneratedType::Virtual(expr) = column.generated_type() else {
             continue;
         };
-
-        match registers {
-            VirtualColumnRegisters::Mapped {
-                registers_start,
-                rowid_reg,
-                layout,
-            } => {
-                let target_reg = layout.to_register(*registers_start, idx);
-                emit_gencol_expr_from_registers(
-                    program,
-                    expr,
-                    target_reg,
-                    *registers_start,
-                    columns,
-                    resolver,
-                    *rowid_reg,
-                    layou,
-                )?;
-                program.emit_column_affinity(target_reg, column.affinity());
-            }
-            VirtualColumnRegisters::Indexed(old_registers) => {
-                let target_reg = old_registers[idx];
-                let column_regs = old_registers.to_vec();
-
-                program.with_self_table_context(
-                    Some(&SelfTableContext::ForDML {
-                        column_regs,
-                        columns: columns.to_vec(),
-                    }),
-                    |program, _| {
-                        translate_expr(program, None, expr, target_reg, resolver)?;
-                        Ok(())
-                    },
-                )?;
-
-                program.emit_column_affinity(target_reg, column.affinity());
-            }
-        }
+        let target_reg = column_regs[idx];
+        program.with_self_table_context(Some(ctx), |program, _| {
+            translate_expr(program, None, expr, target_reg, resolver)
+        })?;
+        program.emit_column_affinity(target_reg, column.affinity());
     }
     Ok(())
 }

@@ -124,7 +124,7 @@ impl SelfTableContext {
         columns: &[Column],
         base_reg: usize,
         layout: &ColumnLayout,
-        rowid_reg: Option<usize>,
+        rowid_reg: usize,
     ) -> Self {
         Self::ForDML {
             column_regs: columns
@@ -132,12 +132,19 @@ impl SelfTableContext {
                 .enumerate()
                 .map(|(i, col)| {
                     if col.is_rowid_alias() {
-                        rowid_reg.unwrap_or(base_reg + layout.to_reg_offset(i))
+                        rowid_reg
                     } else {
                         base_reg + layout.to_reg_offset(i)
                     }
                 })
                 .collect(),
+            columns: columns.to_vec(),
+        }
+    }
+
+    pub fn from_registers(columns: &[Column], regs: &[usize]) -> Self {
+        Self::ForDML {
+            column_regs: regs.to_vec(),
             columns: columns.to_vec(),
         }
     }
@@ -1783,7 +1790,7 @@ impl ProgramBuilder {
         f: impl FnOnce(&mut ProgramBuilder, Option<&SelfTableContext>) -> crate::Result<T>,
     ) -> crate::Result<T> {
         let prev = self.self_table_context.take();
-        self.self_table_context = ctx.cloned(); //TODO can we avoid the clone?
+        self.self_table_context = ctx.cloned();
         let result = f(self, ctx);
         self.self_table_context = prev;
         result

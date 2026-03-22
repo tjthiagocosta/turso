@@ -1470,12 +1470,7 @@ fn emit_index_column_value_new_image(
             layout,
         )?;
 
-        let ctx = SelfTableContext::new(
-            columns,
-            columns_start_reg,
-            layout,
-            Some(rowid_reg),
-        );
+        let ctx = SelfTableContext::new(columns, columns_start_reg, layout, rowid_reg);
         program.with_self_table_context(Some(&ctx), |program, _| {
             translate_expr_no_constant_opt(
                 program,
@@ -1500,8 +1495,8 @@ fn emit_index_column_value_new_image(
                     columns_start_reg,
                     columns,
                     resolver,
-                    Some(rowid_reg),
-                    Some(layout),
+                    rowid_reg,
+                    layout,
                 )?;
                 program.emit_column_affinity(dest_reg, col_in_table.affinity());
             }

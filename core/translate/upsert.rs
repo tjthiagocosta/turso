@@ -1288,7 +1288,7 @@ pub fn emit_upsert(
                     new_start,
                     &ctx.table.columns,
                     resolver,
-                    Some(rowid_reg),
+                    rowid_reg,
                     &layout,
                 )?;
                 program.emit_column_affinity(layout.to_register(new_start, idx), col.affinity());

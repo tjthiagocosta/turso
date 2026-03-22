@@ -2319,7 +2319,9 @@ fn build_insertion<'a>(
     let layout = table
         .btree()
         .map(|bt| bt.column_layout())
-        .unwrap_or(ColumnLayout::Identity { column_count: num_cols });
+        .unwrap_or(ColumnLayout::Identity {
+            column_count: num_cols,
+        });
 
     let base_reg = program.alloc_registers(num_cols);
     let mut column_mappings = table_columns
