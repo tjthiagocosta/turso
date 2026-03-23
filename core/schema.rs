@@ -2257,13 +2257,6 @@ impl BTreeTable {
         self.columns.iter().any(|c| c.is_virtual_generated())
     }
 
-    pub fn non_virtual_column_count(&self) -> usize {
-        self.columns
-            .iter()
-            .filter(|c| !c.is_virtual_generated())
-            .count()
-    }
-
     //TODO this should only be computed once
     /// Build a `ColumnLayout` for this table's register mapping.
     pub fn column_layout(&self) -> ColumnLayout {
