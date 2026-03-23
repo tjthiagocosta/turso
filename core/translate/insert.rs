@@ -2644,7 +2644,7 @@ pub fn compute_virtual_columns_for_triggers<'a>(
             program.with_self_table_context(
                 Some(&self_table_ctx_from_col_mappings(col_mappings, rowid_alias)),
                 |program, _| {
-                    translate_expr(program, None, &*expr, col_mapping.register, resolver)?;
+                    translate_expr(program, None, expr, col_mapping.register, resolver)?;
                     Ok(())
                 },
             )?;

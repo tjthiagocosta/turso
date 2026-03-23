@@ -2261,7 +2261,6 @@ impl BTreeTable {
         self.has_virtual_columns
     }
 
-    //TODO this should only be computed once
     /// Build a `ColumnLayout` for this table's register mapping.
     pub fn column_layout(&self) -> ColumnLayout {
         ColumnLayout::from_btree(self)

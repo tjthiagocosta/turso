@@ -2990,7 +2990,7 @@ pub fn translate_expr(
                             GeneratedType::Virtual(gen_expr) => {
                                 translate_expr(program, None, gen_expr, target_register, resolver)?;
                                 program.emit_column_affinity(target_register, col.affinity());
-                                return Ok(target_register);
+                                Ok(target_register)
                             }
                             GeneratedType::NotGenerated => {
                                 let src_reg = dml_ctx.to_column_reg(*column);
@@ -6451,6 +6451,7 @@ pub(crate) fn emit_returning_scan_back(program: &mut ProgramBuilder, buf: &Retur
 /// When `returning_buffer` is `Some`, the results are buffered into an ephemeral table
 /// instead of being yielded immediately. A subsequent call to `emit_returning_scan_back`
 /// will drain the buffer and yield the rows to the caller.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn emit_returning_results<'a>(
     program: &mut ProgramBuilder,
     table_references: &TableReferences,

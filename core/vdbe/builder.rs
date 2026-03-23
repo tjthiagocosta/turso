@@ -1665,19 +1665,16 @@ impl ProgramBuilder {
     fn emit_column(&mut self, cursor_id: CursorID, column: usize, out: usize) {
         let (_, cursor_type) = self.cursor_ref.get(cursor_id).expect("cursor_id is valid");
 
-        match cursor_type {
-            CursorType::BTreeTable(btree) => {
-                let column_def = btree
-                    .columns
-                    .get(column)
-                    .expect("column index out of bounds");
-                turso_assert!(
-                    !column_def.is_virtual_generated(),
-                    "emit_column called with virtual generated column index",
-                    {"column_index": column}
-                );
-            }
-            _ => {}
+        if let CursorType::BTreeTable(btree) = cursor_type {
+            let column_def = btree
+                .columns
+                .get(column)
+                .expect("column index out of bounds");
+            turso_assert!(
+                !column_def.is_virtual_generated(),
+                "emit_column called with virtual generated column index",
+                {"column_index": column}
+            );
         }
 
         let physical_column = match cursor_type {

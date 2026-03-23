@@ -316,7 +316,7 @@ pub fn prepare_update_plan(
             let col_index = match column_lookup.get(&ident) {
                 Some(idx) => {
                     // cannot update generated columns directly
-                    (&table.columns()[*idx]).ensure_not_generated("UPDATE", col_name.as_str())?;
+                    table.columns()[*idx].ensure_not_generated("UPDATE", col_name.as_str())?;
                     *idx
                 }
                 None => {
