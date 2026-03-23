@@ -1273,6 +1273,7 @@ impl Schema {
                 check_constraints: vec![],
                 rowid_alias_conflict_clause: None,
                 unique_sets: vec![],
+                has_virtual_columns: false,
             })));
 
             // Only add to schema if compatible
@@ -2151,6 +2152,7 @@ pub struct BTreeTable {
     /// ON CONFLICT clause for the INTEGER PRIMARY KEY constraint.
     /// Stored here because rowid-alias PKs have their UniqueSet removed.
     pub rowid_alias_conflict_clause: Option<ResolveType>,
+    pub has_virtual_columns: bool,
 }
 
 impl BTreeTable {
@@ -2170,6 +2172,7 @@ impl BTreeTable {
         let mut modified = (**table).clone();
         if has_virtual {
             modified.columns.retain(|c| !c.is_virtual_generated());
+            modified.has_virtual_columns = false;
         }
         for col in &mut modified.columns {
             if col.is_array() {
@@ -2202,6 +2205,7 @@ impl BTreeTable {
         let mut modified = (**table).clone();
         if has_virtual {
             modified.columns.retain(|c| !c.is_virtual_generated());
+            modified.has_virtual_columns = false;
         }
         for (i, col) in modified.columns.iter_mut().enumerate() {
             if let Some(only) = only_columns {
@@ -2252,9 +2256,8 @@ impl BTreeTable {
             .find(|(_, column)| column.is_rowid_alias())
     }
 
-    //TODO this should only be computed once
     pub fn has_virtual_columns(&self) -> bool {
-        self.columns.iter().any(|c| c.is_virtual_generated())
+        self.has_virtual_columns
     }
 
     //TODO this should only be computed once
@@ -3280,8 +3283,10 @@ pub fn create_table(tbl_name: &str, body: &CreateTableBody, root_page: i64) -> R
     }
 
     // Pre-resolve generated column names to Expr::Column { table: SELF_TABLE, ... }
+    let mut has_virtual_columns = false;
     for i in 0..cols.len() {
         if cols[i].is_virtual_generated() {
+            has_virtual_columns = true;
             let mut expr = cols[i].generated_expr().cloned().unwrap();
             resolve_gencol_names(&mut expr, &cols)?;
             *cols[i].generated_expr_mut().unwrap() = expr;
@@ -3340,6 +3345,7 @@ pub fn create_table(tbl_name: &str, body: &CreateTableBody, root_page: i64) -> R
         },
         check_constraints,
         rowid_alias_conflict_clause,
+        has_virtual_columns,
     })
 }
 
@@ -3931,6 +3937,7 @@ pub fn sqlite_schema_table() -> BTreeTable {
         check_constraints: vec![],
         rowid_alias_conflict_clause: None,
         unique_sets: vec![],
+        has_virtual_columns: false,
     }
 }
 
@@ -4706,6 +4713,7 @@ mod tests {
             foreign_keys: vec![],
             check_constraints: vec![],
             rowid_alias_conflict_clause: None,
+            has_virtual_columns: false,
         };
 
         let result = Index::automatic_from_primary_key(

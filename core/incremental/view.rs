@@ -1461,6 +1461,7 @@ mod tests {
             check_constraints: vec![],
             rowid_alias_conflict_clause: None,
             has_autoincrement: false,
+            has_virtual_columns: false,
         };
 
         // Create orders table
@@ -1507,6 +1508,7 @@ mod tests {
             check_constraints: vec![],
             rowid_alias_conflict_clause: None,
             unique_sets: vec![],
+            has_virtual_columns: false,
         };
 
         // Create products table
@@ -1549,6 +1551,7 @@ mod tests {
             check_constraints: vec![],
             rowid_alias_conflict_clause: None,
             unique_sets: vec![],
+            has_virtual_columns: false,
         };
 
         // Create logs table - without a rowid alias (no INTEGER PRIMARY KEY)
@@ -1584,6 +1587,7 @@ mod tests {
             check_constraints: vec![],
             rowid_alias_conflict_clause: None,
             unique_sets: vec![],
+            has_virtual_columns: false,
         };
 
         schema

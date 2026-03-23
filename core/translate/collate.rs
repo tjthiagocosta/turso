@@ -531,6 +531,7 @@ mod tests {
             foreign_keys: vec![],
             check_constraints: vec![],
             rowid_alias_conflict_clause: None,
+            has_virtual_columns: false,
         }));
         table_references.add_joined_table(JoinedTable {
             op: Operation::Scan(Scan::BTreeTable {
@@ -589,6 +590,7 @@ mod tests {
                 foreign_keys: vec![],
                 check_constraints: vec![],
                 rowid_alias_conflict_clause: None,
+                has_virtual_columns: false,
             })),
             indexed: None,
         });
@@ -625,6 +627,7 @@ mod tests {
                 foreign_keys: vec![],
                 check_constraints: vec![],
                 rowid_alias_conflict_clause: None,
+                has_virtual_columns: false,
             })),
             indexed: None,
         });
@@ -676,6 +679,7 @@ mod tests {
                 foreign_keys: vec![],
                 check_constraints: vec![],
                 rowid_alias_conflict_clause: None,
+                has_virtual_columns: false,
             })),
         });
         table_references

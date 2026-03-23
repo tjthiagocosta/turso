@@ -1175,6 +1175,7 @@ mod tests {
             foreign_keys: vec![],
             check_constraints: vec![],
             rowid_alias_conflict_clause: None,
+            has_virtual_columns: false,
         })
     }
 
