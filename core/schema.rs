@@ -1887,7 +1887,8 @@ impl Clone for Schema {
 }
 
 /// Maps schema column indices to register offsets for DML operations.
-// TODO this should be integrated into a Columns domain type
+//TODO this should be integrated into a Columns domain type
+// This type should also replace BTreeTable::has_virtual_columns
 #[derive(Debug, Clone)]
 pub enum ColumnLayout {
     Identity {
