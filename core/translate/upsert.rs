@@ -1039,14 +1039,10 @@ pub fn emit_upsert(
 
     // Build NEW table payload
     let record_reg = program.alloc_register();
-    let registers_and_columns = table
-        .columns()
-        .iter()
-        .enumerate()
-        .map(|(i, c)| (layout.to_register(new_start, i), c));
     emit_make_record(
         program,
-        registers_and_columns,
+        table.columns().iter(),
+        new_start,
         record_reg,
         table.btree().is_some_and(|bt| bt.is_strict),
     );

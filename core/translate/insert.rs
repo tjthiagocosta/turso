@@ -48,8 +48,8 @@ use crate::{
     vdbe::{
         affinity::Affinity,
         builder::{
-            CursorKey, CursorType, DmlColumnContext, DmlColumnRegisters, ProgramBuilder,
-            ProgramBuilderOpts, SelfTableContext,
+            CursorKey, CursorType, DmlColumnContext, ProgramBuilder, ProgramBuilderOpts,
+            SelfTableContext,
         },
         insn::{to_u16, CmpInsFlags, IdxInsertFlags, InsertFlags, Insn, RegisterOrLiteral},
         BranchOffset,
@@ -823,10 +823,8 @@ pub fn translate_insert(
     // Create and insert the record
     emit_make_record(
         program,
-        insertion
-            .col_mappings
-            .iter()
-            .map(|m| (m.register, m.column)),
+        insertion.col_mappings.iter().map(|m| m.column),
+        insertion.base_reg,
         insertion.record_register(),
         ctx.table.is_strict,
     );
@@ -2619,22 +2617,20 @@ fn self_table_ctx_from_col_mappings<'a>(
     col_mappings: &[ColMapping<'a>],
     rowid_alias: Option<&ColMapping<'a>>,
 ) -> SelfTableContext {
-    SelfTableContext::ForDML(DmlColumnContext {
-        registers: DmlColumnRegisters::Indexed {
-            column_regs: col_mappings
-                .iter()
-                .map(|cm| {
-                    if cm.column.is_rowid_alias() {
-                        if let Some(ra) = rowid_alias {
-                            return ra.register;
-                        }
-                    }
-                    cm.register
-                })
-                .collect(),
-        },
-        columns: col_mappings.iter().map(|cm| cm.column.clone()).collect(),
-    })
+    let columns: Vec<_> = col_mappings.iter().map(|cm| cm.column.clone()).collect();
+    let column_regs = col_mappings
+        .iter()
+        .map(|cm| {
+            if cm.column.is_rowid_alias() {
+                if let Some(ra) = rowid_alias {
+                    return ra.register;
+                }
+            }
+            cm.register
+        })
+        .collect();
+
+    SelfTableContext::ForDML(DmlColumnContext::indexed(&columns, column_regs))
 }
 
 pub fn compute_virtual_columns_for_triggers<'a>(

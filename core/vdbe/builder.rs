@@ -123,7 +123,9 @@ pub enum DmlColumnRegisters {
         rowid_reg: usize,
         layout: ColumnLayout,
     },
-    Indexed { column_regs: Vec<usize> },
+    Indexed {
+        column_regs: Vec<usize>,
+    },
 }
 
 #[derive(Clone)]
@@ -133,6 +135,29 @@ pub struct DmlColumnContext {
 }
 
 impl DmlColumnContext {
+    pub fn layout(
+        columns: &[Column],
+        base_reg: usize,
+        rowid_reg: usize,
+        layout: ColumnLayout,
+    ) -> Self {
+        Self {
+            registers: DmlColumnRegisters::Layout {
+                base_reg,
+                rowid_reg,
+                layout,
+            },
+            columns: columns.to_vec(),
+        }
+    }
+
+    pub fn indexed(columns: &[Column], column_regs: Vec<usize>) -> Self {
+        Self {
+            registers: DmlColumnRegisters::Indexed { column_regs },
+            columns: columns.to_vec(),
+        }
+    }
+
     pub fn to_column_reg(&self, col_idx: usize) -> usize {
         match &self.registers {
             DmlColumnRegisters::Layout {

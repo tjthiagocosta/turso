@@ -35,9 +35,7 @@ use crate::util::{
     check_expr_references_column, exprs_are_equivalent, normalize_ident, parse_numeric_literal,
 };
 use crate::vdbe::affinity::Affinity;
-use crate::vdbe::builder::{
-    CursorType, DmlColumnContext, DmlColumnRegisters, ProgramBuilder, SelfTableContext,
-};
+use crate::vdbe::builder::{CursorType, DmlColumnContext, ProgramBuilder, SelfTableContext};
 use crate::vdbe::insn::{to_u16, InsertFlags};
 use crate::vdbe::{insn::Insn, BranchOffset, CursorID};
 use crate::{bail_parse_error, Database, DatabaseCatalog, LimboError, Result, RwLock, SymbolTable};
@@ -731,32 +729,22 @@ pub fn emit_cdc_patch_record(
 
 pub(super) fn emit_make_record<'a>(
     program: &mut ProgramBuilder,
-    //TODO we assume that registers are contigious, so we shouldn't require an index anymore, we should just accept a &[Column]
-    cols: impl IntoIterator<Item = (usize, &'a Column)>,
+    cols: impl IntoIterator<Item = &'a Column>,
+    start_reg: usize,
     dest_reg: usize,
     is_strict: bool,
 ) {
-    let storable_cols: Vec<(usize, &Column)> = cols
+    // Only non-virtual columns are stored in the record.
+    // With storage-mapped layout they occupy start_reg..start_reg+nv_count.
+    let storable_cols: Vec<&Column> = cols
         .into_iter()
-        .filter(|(_, c)| !c.is_virtual_generated())
+        .filter(|c| !c.is_virtual_generated())
         .collect();
     let storable_count = storable_cols.len();
 
-    let &(start_reg, _) = storable_cols
-        .first()
-        .expect("there should be at least 1 storable column");
-
-    debug_assert!(
-        storable_cols
-            .iter()
-            .enumerate()
-            .all(|(i, (r, _))| *r == start_reg + i),
-        "storable (non-virtual) column registers must be contiguous"
-    );
-
     let affinity_str: String = storable_cols
         .iter()
-        .map(|(_, c)| c.affinity_with_strict(is_strict).aff_mask())
+        .map(|c| c.affinity_with_strict(is_strict).aff_mask())
         .collect();
 
     program.emit_insn(Insn::MakeRecord {
@@ -1472,14 +1460,12 @@ fn emit_index_column_value_new_image(
             layout,
         )?;
 
-        let ctx = SelfTableContext::ForDML(DmlColumnContext {
-            registers: DmlColumnRegisters::Layout {
-                base_reg: columns_start_reg,
-                rowid_reg,
-                layout: layout.clone(),
-            },
-            columns: columns.to_vec(),
-        });
+        let ctx = SelfTableContext::ForDML(DmlColumnContext::layout(
+            columns,
+            columns_start_reg,
+            rowid_reg,
+            layout.clone(),
+        ));
         program.with_self_table_context(Some(&ctx), |program, _| {
             translate_expr_no_constant_opt(
                 program,

@@ -41,7 +41,7 @@ use crate::{
     util::normalize_ident,
     vdbe::{
         affinity::Affinity,
-        builder::{CursorKey, CursorType, DmlColumnContext, DmlColumnRegisters, SelfTableContext},
+        builder::{CursorKey, CursorType, DmlColumnContext, SelfTableContext},
         insn::{to_u16, CmpInsFlags, IdxInsertFlags, InsertFlags, Insn, RegisterOrLiteral},
         BranchOffset,
     },
@@ -1112,23 +1112,11 @@ fn emit_update_insns<'a>(
             let new_rowid_reg = rowid_set_clause_reg.unwrap_or(beg);
 
             // Compute virtual columns for NEW values
-            let new_ctx = DmlColumnContext {
-                registers: DmlColumnRegisters::Layout {
-                    base_reg: start,
-                    rowid_reg: beg,
-                    layout: layout.clone(),
-                },
-                columns: columns.to_vec(),
-            };
+            let new_ctx = DmlColumnContext::layout(columns, start, beg, layout.clone());
             compute_virtual_columns(program, columns, &new_ctx, &t_ctx.resolver)?;
 
             // Compute virtual columns for OLD values
-            let old_ctx = DmlColumnContext {
-                registers: DmlColumnRegisters::Indexed {
-                    column_regs: old_registers.to_vec(),
-                },
-                columns: columns.to_vec(),
-            };
+            let old_ctx = DmlColumnContext::indexed(columns, old_registers.clone());
             compute_virtual_columns(program, columns, &old_ctx, &t_ctx.resolver)?;
 
             let new_registers = (0..col_len)
@@ -2115,12 +2103,8 @@ fn emit_update_insns<'a>(
             let record_reg = program.alloc_register();
             emit_make_record(
                 program,
-                target_table
-                    .table
-                    .columns()
-                    .iter()
-                    .enumerate()
-                    .map(|(i, c)| (layout.to_register(start, i), c)),
+                target_table.table.columns().iter(),
+                start,
                 record_reg,
                 table.is_strict,
             );
@@ -2257,24 +2241,12 @@ fn emit_update_insns<'a>(
                     let columns = target_table.table.columns();
 
                     // Compute VIRTUAL columns for NEW values
-                    let new_ctx = DmlColumnContext {
-                        registers: DmlColumnRegisters::Layout {
-                            base_reg: start,
-                            rowid_reg: beg,
-                            layout: layout.clone(),
-                        },
-                        columns: columns.to_vec(),
-                    };
+                    let new_ctx = DmlColumnContext::layout(columns, start, beg, layout.clone());
                     compute_virtual_columns(program, columns, &new_ctx, &t_ctx.resolver)?;
 
                     // Compute VIRTUAL columns for OLD values if we have preserved OLD registers
                     if let Some(ref old_regs) = preserved_old_registers {
-                        let old_ctx = DmlColumnContext {
-                            registers: DmlColumnRegisters::Indexed {
-                                column_regs: old_regs.to_vec(),
-                            },
-                            columns: columns.to_vec(),
-                        };
+                        let old_ctx = DmlColumnContext::indexed(columns, old_regs.clone());
                         compute_virtual_columns(program, columns, &old_ctx, &t_ctx.resolver)?;
                     }
 
@@ -2500,14 +2472,12 @@ pub(crate) fn emit_gencol_expr_from_registers(
     rowid_reg: usize,
     layout: &ColumnLayout,
 ) -> Result<()> {
-    let ctx = SelfTableContext::ForDML(DmlColumnContext {
-        registers: DmlColumnRegisters::Layout {
-            base_reg: registers_start,
-            rowid_reg,
-            layout: layout.clone(),
-        },
-        columns: columns.to_vec(),
-    });
+    let ctx = SelfTableContext::ForDML(DmlColumnContext::layout(
+        columns,
+        registers_start,
+        rowid_reg,
+        layout.clone(),
+    ));
     program.with_self_table_context(Some(&ctx), |program, _| {
         translate_expr(program, None, expr, target_reg, resolver)?;
         Ok(())
