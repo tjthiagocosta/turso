@@ -47,7 +47,10 @@ use crate::{
     util::normalize_ident,
     vdbe::{
         affinity::Affinity,
-        builder::{CursorKey, CursorType, ProgramBuilder, ProgramBuilderOpts, SelfTableContext},
+        builder::{
+            CursorKey, CursorType, DmlColumnContext, DmlColumnRegisters, ProgramBuilder,
+            ProgramBuilderOpts, SelfTableContext,
+        },
         insn::{to_u16, CmpInsFlags, IdxInsertFlags, InsertFlags, Insn, RegisterOrLiteral},
         BranchOffset,
     },
@@ -2616,20 +2619,22 @@ fn self_table_ctx_from_col_mappings<'a>(
     col_mappings: &[ColMapping<'a>],
     rowid_alias: Option<&ColMapping<'a>>,
 ) -> SelfTableContext {
-    SelfTableContext::ForDML {
-        column_regs: col_mappings
-            .iter()
-            .map(|cm| {
-                if cm.column.is_rowid_alias() {
-                    if let Some(ra) = rowid_alias {
-                        return ra.register;
+    SelfTableContext::ForDML(DmlColumnContext {
+        registers: DmlColumnRegisters::Indexed {
+            column_regs: col_mappings
+                .iter()
+                .map(|cm| {
+                    if cm.column.is_rowid_alias() {
+                        if let Some(ra) = rowid_alias {
+                            return ra.register;
+                        }
                     }
-                }
-                cm.register
-            })
-            .collect(),
+                    cm.register
+                })
+                .collect(),
+        },
         columns: col_mappings.iter().map(|cm| cm.column.clone()).collect(),
-    }
+    })
 }
 
 pub fn compute_virtual_columns_for_triggers<'a>(

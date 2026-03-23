@@ -2984,11 +2984,8 @@ pub fn translate_expr(
                             resolver,
                         )
                     }
-                    Some(SelfTableContext::ForDML {
-                        ref column_regs,
-                        ref columns,
-                    }) => {
-                        let col = &columns[*column];
+                    Some(SelfTableContext::ForDML(dml_ctx)) => {
+                        let col = &dml_ctx.columns[*column];
                         match col.generated_type() {
                             GeneratedType::Virtual(gen_expr) => {
                                 translate_expr(program, None, gen_expr, target_register, resolver)?;
@@ -2996,7 +2993,7 @@ pub fn translate_expr(
                                 return Ok(target_register);
                             }
                             GeneratedType::NotGenerated => {
-                                let src_reg = column_regs[*column];
+                                let src_reg = dml_ctx.to_column_reg(*column);
                                 program.emit_insn(Insn::Copy {
                                     src_reg,
                                     dst_reg: target_register,

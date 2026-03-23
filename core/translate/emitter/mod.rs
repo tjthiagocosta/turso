@@ -35,7 +35,9 @@ use crate::util::{
     check_expr_references_column, exprs_are_equivalent, normalize_ident, parse_numeric_literal,
 };
 use crate::vdbe::affinity::Affinity;
-use crate::vdbe::builder::{CursorType, ProgramBuilder, SelfTableContext};
+use crate::vdbe::builder::{
+    CursorType, DmlColumnContext, DmlColumnRegisters, ProgramBuilder, SelfTableContext,
+};
 use crate::vdbe::insn::{to_u16, InsertFlags};
 use crate::vdbe::{insn::Insn, BranchOffset, CursorID};
 use crate::{bail_parse_error, Database, DatabaseCatalog, LimboError, Result, RwLock, SymbolTable};
@@ -1470,7 +1472,14 @@ fn emit_index_column_value_new_image(
             layout,
         )?;
 
-        let ctx = SelfTableContext::new(columns, columns_start_reg, layout, rowid_reg);
+        let ctx = SelfTableContext::ForDML(DmlColumnContext {
+            registers: DmlColumnRegisters::Layout {
+                base_reg: columns_start_reg,
+                rowid_reg,
+                layout: layout.clone(),
+            },
+            columns: columns.to_vec(),
+        });
         program.with_self_table_context(Some(&ctx), |program, _| {
             translate_expr_no_constant_opt(
                 program,

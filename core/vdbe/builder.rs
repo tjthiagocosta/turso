@@ -105,47 +105,48 @@ impl CursorKey {
     }
 }
 
-/// Context for resolving `Expr::Column` that has a `TableInternalId::SELF_TABLE` plaheholder.
+/// Context for resolving `Expr::Column` that has a `TableInternalId::SELF_TABLE` placeholder.
 #[derive(Clone)]
 pub enum SelfTableContext {
     ForSelect {
         table_ref_id: TableInternalId,
         referenced_tables: TableReferences,
     },
-    ForDML {
-        /// column_index → register
-        column_regs: Vec<usize>,
-        columns: Vec<Column>,
-    },
+    ForDML(DmlColumnContext),
 }
 
-impl SelfTableContext {
-    pub fn new(
-        columns: &[Column],
+#[derive(Clone)]
+pub enum DmlColumnRegisters {
+    // Used to compute column registers lazily
+    Layout {
         base_reg: usize,
-        layout: &ColumnLayout,
         rowid_reg: usize,
-    ) -> Self {
-        Self::ForDML {
-            column_regs: columns
-                .iter()
-                .enumerate()
-                .map(|(i, col)| {
-                    if col.is_rowid_alias() {
-                        rowid_reg
-                    } else {
-                        base_reg + layout.to_reg_offset(i)
-                    }
-                })
-                .collect(),
-            columns: columns.to_vec(),
-        }
-    }
+        layout: ColumnLayout,
+    },
+    Indexed { column_regs: Vec<usize> },
+}
 
-    pub fn from_registers(columns: &[Column], regs: &[usize]) -> Self {
-        Self::ForDML {
-            column_regs: regs.to_vec(),
-            columns: columns.to_vec(),
+#[derive(Clone)]
+pub struct DmlColumnContext {
+    pub registers: DmlColumnRegisters,
+    pub columns: Vec<Column>,
+}
+
+impl DmlColumnContext {
+    pub fn to_column_reg(&self, col_idx: usize) -> usize {
+        match &self.registers {
+            DmlColumnRegisters::Layout {
+                base_reg,
+                rowid_reg,
+                layout,
+            } => {
+                if self.columns[col_idx].is_rowid_alias() {
+                    *rowid_reg
+                } else {
+                    layout.to_register(*base_reg, col_idx)
+                }
+            }
+            DmlColumnRegisters::Indexed { column_regs } => column_regs[col_idx],
         }
     }
 }
